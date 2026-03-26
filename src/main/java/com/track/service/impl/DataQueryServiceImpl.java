@@ -4,6 +4,8 @@ import com.track.entity.DatasourceConfig;
 import com.track.service.DataQueryService;
 import com.track.service.DatasourceConfigService;
 import com.track.util.DataSourceUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisMovedDataException;
@@ -19,10 +21,16 @@ import java.util.regex.Pattern;
 @Service
 public class DataQueryServiceImpl implements DataQueryService {
 
+    private static final Logger log = LoggerFactory.getLogger(DataQueryServiceImpl.class);
     private static final Pattern WRITE_PATTERN = Pattern.compile(
         "\\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|REPLACE)\\b",
         Pattern.CASE_INSENSITIVE
     );
+    private static final Pattern DANGEROUS_STAT_PATTERN = Pattern.compile(
+        "(--|/\\*|\\*/|;)",
+        Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9_]*$");
     private static final int MAX_ROWS = 1000;
 
     private final DatasourceConfigService datasourceConfigService;
@@ -32,17 +40,31 @@ public class DataQueryServiceImpl implements DataQueryService {
     }
 
     @Override
-    public Map<String, Object> executeQuery(Long datasourceId, String schema, String sql, int page, int size) {
-        if (WRITE_PATTERN.matcher(sql).find()) {
+    public Map<String, Object> executeQuery(Long datasourceId, String schema, String stat, int page, int size) {
+        if (stat == null || stat.trim().isEmpty()) {
+            throw new IllegalArgumentException("查询语句不能为空");
+        }
+        if (page < 1) {
+            throw new IllegalArgumentException("page 必须大于等于 1");
+        }
+        if (size < 1) {
+            throw new IllegalArgumentException("size 必须大于等于 1");
+        }
+        String trimmedStat = stat.trim();
+        if (DANGEROUS_STAT_PATTERN.matcher(trimmedStat).find()) {
+            throw new IllegalArgumentException("查询语句包含不安全内容，仅支持单条纯 SELECT 查询");
+        }
+        if (WRITE_PATTERN.matcher(stat).find()) {
             throw new IllegalArgumentException("仅支持 SELECT 查询，禁止写操作");
         }
-        if (!sql.trim().toUpperCase().startsWith("SELECT")) {
+        if (!trimmedStat.toUpperCase(Locale.ROOT).startsWith("SELECT")) {
             throw new IllegalArgumentException("仅支持 SELECT 语句");
         }
 
         DatasourceConfig config = datasourceConfigService.getById(datasourceId);
         if (config == null) throw new IllegalArgumentException("数据源不存在");
         String type = DataSourceUtil.normalizeDbType(config.getType());
+        String validatedSchema = validateSchema(schema, config, type);
         if ("REDIS".equals(type)) {
             throw new IllegalArgumentException("Redis 请使用专用查询接口");
         }
@@ -53,23 +75,21 @@ public class DataQueryServiceImpl implements DataQueryService {
             ds = DataSourceUtil.createDataSource(config);
             conn = ds.getConnection();
 
-            if (("ORACLE".equals(type) || "OCEANBASE_ORACLE".equals(type)) && schema != null && !schema.isEmpty()) {
-                try (Statement st = conn.createStatement()) {
-                    st.execute("ALTER SESSION SET CURRENT_SCHEMA = " + schema);
-                }
-            } else if (("MYSQL".equals(type) || "OCEANBASE".equals(type)) && schema != null && !schema.isEmpty()) {
-                conn.setCatalog(schema);
+            if (("ORACLE".equals(type) || "OCEANBASE_ORACLE".equals(type)) && validatedSchema != null) {
+                conn.setSchema(validatedSchema);
+            } else if (("MYSQL".equals(type) || "OCEANBASE".equals(type)) && validatedSchema != null) {
+                conn.setCatalog(validatedSchema);
             }
 
             int offset = (page - 1) * size;
             int limit = Math.min(size, MAX_ROWS);
-            String pageSql = addLimit(sql, limit, offset, type);
+            String pageStat = addLimit(trimmedStat, limit, offset, type);
 
             List<Map<String, Object>> rows = new ArrayList<>();
             List<String> columns = new ArrayList<>();
             int total = 0;
 
-            try (PreparedStatement ps = conn.prepareStatement(pageSql);
+            try (PreparedStatement ps = conn.prepareStatement(pageStat);
                  ResultSet rs = ps.executeQuery()) {
                 ResultSetMetaData meta = rs.getMetaData();
                 int colCount = meta.getColumnCount();
@@ -86,16 +106,7 @@ public class DataQueryServiceImpl implements DataQueryService {
                 }
             }
 
-            // 简单 count（仅对简单查询有效）
-            try {
-                String countSql = "SELECT COUNT(*) FROM (" + sql + ") _cnt";
-                try (PreparedStatement ps = conn.prepareStatement(countSql);
-                     ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) total = rs.getInt(1);
-                }
-            } catch (Exception e) {
-                total = rows.size();
-            }
+            total = rows.size();
 
             Map<String, Object> r = new HashMap<String, Object>();
             r.put("columns", columns);
@@ -105,7 +116,8 @@ public class DataQueryServiceImpl implements DataQueryService {
             r.put("size", size);
             return r;
         } catch (SQLException e) {
-            throw new RuntimeException("查询执行失败: " + e.getMessage(), e);
+            log.error("查询执行失败 datasourceId={}, type={}, schema={}", datasourceId, type, schema, e);
+            throw new IllegalArgumentException(buildSafeSqlErrorMessage(e));
         } finally {
             if (conn != null) {
                 try {
@@ -117,26 +129,70 @@ public class DataQueryServiceImpl implements DataQueryService {
         }
     }
 
-    private String addLimit(String sql, int limit, int offset, String type) {
-        sql = sql.trim();
-        // Oracle/OceanBase Oracle 不支持 LIMIT，必须先去掉用户 SQL 末尾的 LIMIT/OFFSET，再套 ROWNUM 分页
+    private String addLimit(String stat, int limit, int offset, String type) {
+        stat = stat.trim();
         if ("ORACLE".equals(type) || "OCEANBASE_ORACLE".equals(type)) {
-            sql = sql.replaceAll("(?i)\\s+LIMIT\\s+\\d+(\\s+OFFSET\\s+\\d+)?\\s*$", "");
-            return "SELECT * FROM (SELECT ROWNUM rn, t.* FROM (" + sql + ") t WHERE ROWNUM <= " + (offset + limit) + ") WHERE rn > " + offset;
+            stat = stat.replaceAll("(?i)\\s+LIMIT\\s+\\d+(\\s+OFFSET\\s+\\d+)?\\s*$", "");
+            return "SELECT * FROM (SELECT ROWNUM rn, t.* FROM (" + stat + ") t WHERE ROWNUM <= " + (offset + limit) + ") WHERE rn > " + offset;
         }
-        // 去掉用户 SQL 末尾已有的 LIMIT/OFFSET，避免出现 "LIMIT 100 LIMIT 20 OFFSET 0" 语法错误
-        sql = sql.replaceAll("(?i)\\s+LIMIT\\s+\\d+(\\s+OFFSET\\s+\\d+)?\\s*$", "");
-        return sql + " LIMIT " + limit + " OFFSET " + offset;
+        stat = stat.replaceAll("(?i)\\s+LIMIT\\s+\\d+(\\s+OFFSET\\s+\\d+)?\\s*$", "");
+        return stat + " LIMIT " + limit + " OFFSET " + offset;
+    }
+
+    private String validateSchema(String schema, DatasourceConfig config, String dbType) {
+        if (schema == null || schema.trim().isEmpty()) {
+            return null;
+        }
+        String trimmed = schema.trim();
+        if (!IDENTIFIER_PATTERN.matcher(trimmed).matches()) {
+            throw new IllegalArgumentException("schema 参数不合法");
+        }
+        if ("ORACLE".equals(dbType) || "OCEANBASE_ORACLE".equals(dbType)) {
+            return trimmed;
+        }
+
+        String allowedSchema = config.getDatabaseName();
+        if (allowedSchema == null || allowedSchema.trim().isEmpty()) {
+            throw new IllegalArgumentException("当前数据源未配置可用 schema");
+        }
+//        if (!trimmed.equalsIgnoreCase(allowedSchema.trim())) {
+//            throw new IllegalArgumentException("schema 不在允许范围内");
+//        }
+        return trimmed;
+    }
+
+    /**
+     * 将数据库异常转换为可前端展示的脱敏提示，避免泄露 SQL/库表结构等敏感细节。
+     */
+    private String buildSafeSqlErrorMessage(SQLException e) {
+        if (e instanceof SQLSyntaxErrorException) {
+            return "SQL 语法有误，或查询对象不存在，请检查后重试";
+        }
+        if (e instanceof SQLTimeoutException || e instanceof SQLTransientConnectionException) {
+            return "数据库连接超时，请稍后重试";
+        }
+        String state = e.getSQLState();
+        if (state != null) {
+            if (state.startsWith("42")) {
+                return "SQL 语法有误，或查询对象不存在，请检查后重试";
+            }
+            if (state.startsWith("08")) {
+                return "数据库连接异常，请稍后重试";
+            }
+        }
+        return "查询执行失败，请检查语句和数据源配置";
     }
 
     @Override
-    public Map<String, Object> queryTableData(Long datasourceId, String schema, String tableName, String whereClause, int page, int size) {
-        String safeTable = tableName.replaceAll("[^a-zA-Z0-9_]", "");
-        String sql = "SELECT * FROM " + safeTable;
-        if (whereClause != null && !whereClause.trim().isEmpty()) {
-            sql += " WHERE " + whereClause;
+    public Map<String, Object> queryObjectData(Long datasourceId, String schema, String objectName, String whereClause, int page, int size) {
+        if (objectName == null || !IDENTIFIER_PATTERN.matcher(objectName).matches()) {
+            throw new IllegalArgumentException("objectName 参数不合法");
         }
-        return executeQuery(datasourceId, schema, sql, page, size);
+        if (whereClause != null && !whereClause.trim().isEmpty()) {
+            throw new IllegalArgumentException("暂不支持自定义 whereClause 条件，请改用查询语句接口");
+        }
+        String stat = "SELECT * FROM " + objectName;
+        return executeQuery(datasourceId, schema, stat, page, size);
     }
 
     @Override
@@ -162,7 +218,7 @@ public class DataQueryServiceImpl implements DataQueryService {
             if ("zset".equals(type)) {
                 return jedis.zrangeWithScores(key, 0, -1);
             }
-            return null;
+            return "";
         });
     }
 
@@ -171,10 +227,6 @@ public class DataQueryServiceImpl implements DataQueryService {
         T doInRedis(Jedis jedis);
     }
 
-    /**
-     * 执行 Redis 操作，自动跟随 MOVED 重定向（适配 Redis Cluster）。
-     * 允许最多 5 次重定向，以避免错误配置导致死循环。
-     */
     private <T> T executeWithRedirect(DatasourceConfig config, RedisCallback<T> callback) {
         String host = config.getHost();
         int port = config.getPort() != null ? config.getPort() : 6379;

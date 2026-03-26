@@ -4,8 +4,12 @@ import com.track.entity.DatasourceConfig;
 import com.track.service.DatasourceConfigService;
 import com.track.service.MetadataService;
 import com.track.util.DataSourceUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.ScanParams;
+import redis.clients.jedis.ScanResult;
 import redis.clients.jedis.exceptions.JedisMovedDataException;
 
 import javax.sql.DataSource;
@@ -18,6 +22,7 @@ import java.util.*;
 @Service
 public class MetadataServiceImpl implements MetadataService {
 
+    private static final Logger log = LoggerFactory.getLogger(MetadataServiceImpl.class);
     private final DatasourceConfigService datasourceConfigService;
 
     public MetadataServiceImpl(DatasourceConfigService datasourceConfigService) {
@@ -48,7 +53,8 @@ public class MetadataServiceImpl implements MetadataService {
             }
             return getMysqlSchemas(conn);
         } catch (SQLException e) {
-            throw new RuntimeException("获取库列表失败: " + e.getMessage(), e);
+            log.error("获取库列表失败 datasourceId={}, type={}", datasourceId, type, e);
+            throw new RuntimeException("获取库列表失败");
         } finally {
             if (conn != null) {
                 try {
@@ -64,7 +70,6 @@ public class MetadataServiceImpl implements MetadataService {
         List<String> list = new ArrayList<>();
         try (ResultSet rs = conn.getMetaData().getCatalogs()) {
             while (rs.next()) {
-                // JDBC getCatalogs() 返回列名为 TABLE_CAT，非 TABLE_CATALOG
                 list.add(rs.getString("TABLE_CAT"));
             }
         }
@@ -84,7 +89,7 @@ public class MetadataServiceImpl implements MetadataService {
     }
 
     @Override
-    public List<Map<String, Object>> getTables(Long datasourceId, String schema) {
+    public List<Map<String, Object>> getObjects(Long datasourceId, String schema) {
         DatasourceConfig config = datasourceConfigService.getById(datasourceId);
         if (config == null) throw new IllegalArgumentException("数据源不存在");
         String type = DataSourceUtil.normalizeDbType(config.getType());
@@ -103,7 +108,7 @@ public class MetadataServiceImpl implements MetadataService {
             conn = ds.getConnection();
 
             if ("ORACLE".equals(type) || "OCEANBASE_ORACLE".equals(type)) {
-                return getOracleTables(conn, !isBlank(schema) ? schema : config.getUsername());
+                return getOracleObjects(conn, !isBlank(schema) ? schema : config.getUsername());
             }
 
             String db = !isBlank(schema) ? schema : config.getDatabaseName();
@@ -111,9 +116,10 @@ public class MetadataServiceImpl implements MetadataService {
                 List<String> schemas = getMysqlSchemas(conn);
                 db = schemas.isEmpty() ? null : schemas.get(0);
             }
-            return getMysqlTables(conn, db);
+            return getMysqlObjects(conn, db);
         } catch (SQLException e) {
-            throw new RuntimeException("获取表列表失败: " + e.getMessage(), e);
+            log.error("获取表列表失败 datasourceId={}, type={}, schema={}", datasourceId, type, schema, e);
+            throw new RuntimeException("获取表列表失败");
         } finally {
             if (conn != null) {
                 try {
@@ -125,13 +131,13 @@ public class MetadataServiceImpl implements MetadataService {
         }
     }
 
-    private List<Map<String, Object>> getMysqlTables(Connection conn, String schema) throws SQLException {
+    private List<Map<String, Object>> getMysqlObjects(Connection conn, String schema) throws SQLException {
         List<Map<String, Object>> list = new ArrayList<>();
-        String sql = "SELECT TABLE_NAME as name, TABLE_COMMENT as comment "
+        String stat = "SELECT TABLE_NAME as name, TABLE_COMMENT as comment "
                 + "FROM information_schema.TABLES "
                 + "WHERE TABLE_SCHEMA = ? "
                 + "ORDER BY TABLE_NAME";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (PreparedStatement ps = conn.prepareStatement(stat)) {
             ps.setString(1, schema);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -145,22 +151,21 @@ public class MetadataServiceImpl implements MetadataService {
         return list;
     }
 
-    private List<Map<String, Object>> getOracleTables(Connection conn, String schema) throws SQLException {
+    private List<Map<String, Object>> getOracleObjects(Connection conn, String schema) throws SQLException {
         List<Map<String, Object>> list = new ArrayList<>();
-        // 使用 table_comment 别名避免 OceanBase/Oracle 保留字 comment 导致语法错误
-        String sql = "SELECT t.TABLE_NAME as name, c.COMMENTS as table_comment "
+        String stat = "SELECT t.TABLE_NAME as name, c.COMMENTS as table_comment "
                 + "FROM ALL_TABLES t "
                 + "LEFT JOIN ALL_TAB_COMMENTS c ON t.OWNER = c.OWNER AND t.TABLE_NAME = c.TABLE_NAME "
                 + "WHERE t.OWNER = ? "
                 + "ORDER BY t.TABLE_NAME";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (PreparedStatement ps = conn.prepareStatement(stat)) {
             ps.setString(1, schema);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    String tableComment = rs.getString("table_comment");
+                    String objectComment = rs.getString("table_comment");
                     Map<String, Object> m = new HashMap<String, Object>();
                     m.put("name", rs.getString("name"));
-                    m.put("comment", tableComment != null ? tableComment : "");
+                    m.put("comment", objectComment != null ? objectComment : "");
                     list.add(m);
                 }
             }
@@ -169,7 +174,7 @@ public class MetadataServiceImpl implements MetadataService {
     }
 
     @Override
-    public List<Map<String, Object>> getTableColumns(Long datasourceId, String schema, String tableName) {
+    public List<Map<String, Object>> getObjectColumns(Long datasourceId, String schema, String objectName) {
         DatasourceConfig config = datasourceConfigService.getById(datasourceId);
         if (config == null) throw new IllegalArgumentException("数据源不存在");
         String type = DataSourceUtil.normalizeDbType(config.getType());
@@ -185,11 +190,12 @@ public class MetadataServiceImpl implements MetadataService {
             conn = ds.getConnection();
 
             if ("ORACLE".equals(type) || "OCEANBASE_ORACLE".equals(type)) {
-                return getOracleColumns(conn, schema, tableName);
+                return getOracleColumns(conn, schema, objectName);
             }
-            return getMysqlColumns(conn, schema, tableName);
+            return getMysqlColumns(conn, schema, objectName);
         } catch (SQLException e) {
-            throw new RuntimeException("获取表结构失败: " + e.getMessage(), e);
+            log.error("获取表结构失败 datasourceId={}, type={}, schema={}, objectName={}", datasourceId, type, schema, objectName, e);
+            throw new RuntimeException("获取表结构失败");
         } finally {
             if (conn != null) {
                 try {
@@ -201,15 +207,15 @@ public class MetadataServiceImpl implements MetadataService {
         }
     }
 
-    private List<Map<String, Object>> getMysqlColumns(Connection conn, String schema, String tableName) throws SQLException {
+    private List<Map<String, Object>> getMysqlColumns(Connection conn, String schema, String objectName) throws SQLException {
         List<Map<String, Object>> list = new ArrayList<>();
-        String sql = "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE "
+        String stat = "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, COLUMN_COMMENT, COLUMN_KEY, IS_NULLABLE "
                 + "FROM information_schema.COLUMNS "
                 + "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? "
                 + "ORDER BY ORDINAL_POSITION";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (PreparedStatement ps = conn.prepareStatement(stat)) {
             ps.setString(1, schema);
-            ps.setString(2, tableName);
+            ps.setString(2, objectName);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -226,16 +232,16 @@ public class MetadataServiceImpl implements MetadataService {
         return list;
     }
 
-    private List<Map<String, Object>> getOracleColumns(Connection conn, String schema, String tableName) throws SQLException {
+    private List<Map<String, Object>> getOracleColumns(Connection conn, String schema, String objectName) throws SQLException {
         List<Map<String, Object>> list = new ArrayList<>();
-        String sql = "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.DATA_LENGTH, c.NULLABLE, cc.COMMENTS "
+        String stat = "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.DATA_LENGTH, c.NULLABLE, cc.COMMENTS "
                 + "FROM ALL_TAB_COLUMNS c "
                 + "LEFT JOIN ALL_COL_COMMENTS cc ON c.OWNER = cc.OWNER AND c.TABLE_NAME = cc.TABLE_NAME AND c.COLUMN_NAME = cc.COLUMN_NAME "
                 + "WHERE c.OWNER = ? AND c.TABLE_NAME = ? "
                 + "ORDER BY c.COLUMN_ID";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (PreparedStatement ps = conn.prepareStatement(stat)) {
             ps.setString(1, schema);
-            ps.setString(2, tableName);
+            ps.setString(2, objectName);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -261,7 +267,24 @@ public class MetadataServiceImpl implements MetadataService {
         }
         return executeWithRedirect(config, jedis -> {
             String p = (pattern == null || pattern.isEmpty()) ? "*" : pattern;
-            return new ArrayList<>(jedis.keys(p));
+            int limit = 2000;
+            ScanParams scanParams = new ScanParams().match(p).count(500);
+            List<String> keys = new ArrayList<>();
+            String cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> r = jedis.scan(cursor, scanParams);
+                cursor = r.getCursor();
+                List<String> batch = r.getResult();
+                if (batch != null && !batch.isEmpty()) {
+                    for (String k : batch) {
+                        keys.add(k);
+                        if (keys.size() >= limit) {
+                            return keys;
+                        }
+                    }
+                }
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+            return keys;
         });
     }
 
@@ -297,10 +320,6 @@ public class MetadataServiceImpl implements MetadataService {
         T doInRedis(Jedis jedis);
     }
 
-    /**
-     * 执行 Redis 操作，自动跟随 MOVED 重定向（适配 Redis Cluster）。
-     * 允许最多 5 次重定向，以避免错误配置导致死循环。
-     */
     private <T> T executeWithRedirect(DatasourceConfig config, RedisCallback<T> callback) {
         String host = config.getHost();
         int port = config.getPort() != null ? config.getPort() : 6379;

@@ -22,25 +22,25 @@ public interface DataQueryService {
      *
      * @param datasourceId 数据源 ID
      * @param schema       库名或 schema，可为空
-     * @param sql          SELECT 语句
+     * @param stat         SELECT 语句
      * @param page         页码，从 1 开始
      * @param size         每页条数
      * @return 含 columns、rows、total、page、size 的 Map
      */
-    Map<String, Object> executeQuery(Long datasourceId, String schema, String sql, int page, int size);
+    Map<String, Object> executeQuery(Long datasourceId, String schema, String stat, int page, int size);
 
     /**
      * 按表名查询数据（分页），可带 WHERE 条件。
      *
      * @param datasourceId 数据源 ID
      * @param schema       库名或 schema
-     * @param tableName    表名
+     * @param objectName   表名
      * @param whereClause  WHERE 条件（不含 WHERE 关键字），可为空
      * @param page         页码
      * @param size         每页条数
      * @return 含 columns、rows、total、page、size 的 Map
      */
-    Map<String, Object> queryTableData(Long datasourceId, String schema, String tableName, String whereClause, int page, int size);
+    Map<String, Object> queryObjectData(Long datasourceId, String schema, String objectName, String whereClause, int page, int size);
 
     /**
      * Redis：获取指定 key 的值（按类型返回 string/hash/list/set/zset 等）。

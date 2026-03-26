@@ -1,7 +1,7 @@
 spring:
   profiles:
     # 默认激活的环境：dev / prod
-    active: test
+    active: prod
 
 # 公共配置（开发、生产通用）
 server:

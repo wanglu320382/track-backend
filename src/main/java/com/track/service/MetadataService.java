@@ -4,8 +4,6 @@
  */
 package com.track.service;
 
-import com.track.entity.DatasourceConfig;
-
 import java.util.List;
 import java.util.Map;
 
@@ -35,17 +33,17 @@ public interface MetadataService {
      * @param schema       库名或 schema，可为空
      * @return 表信息列表，每项含 name、comment
      */
-    List<Map<String, Object>> getTables(Long datasourceId, String schema);
+    List<Map<String, Object>> getObjects(Long datasourceId, String schema);
 
     /**
      * 获取表结构详情（字段名、类型、注释、主键、是否可空等）。
      *
      * @param datasourceId 数据源 ID
      * @param schema       库名或 schema
-     * @param tableName    表名
+     * @param objectName   表名
      * @return 列信息列表，每项含 columnName、dataType、columnType、comment、columnKey、nullable
      */
-    List<Map<String, Object>> getTableColumns(Long datasourceId, String schema, String tableName);
+    List<Map<String, Object>> getObjectColumns(Long datasourceId, String schema, String objectName);
 
     /**
      * Redis：按模式扫描 key 列表。

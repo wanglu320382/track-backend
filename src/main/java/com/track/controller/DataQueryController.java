@@ -2,16 +2,13 @@ package com.track.controller;
 
 import com.track.common.Result;
 import com.track.service.DataQueryService;
-import com.track.util.SqlCryptoUtil;
+import com.track.util.StatCryptoUtil;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
 /**
  * 数据查询控制器（REST API 入口）。
- * <p>
- * 提供 SQL 查询、表数据快捷查询及 Redis 值查询接口。
- * </p>
  */
 @RestController
 @RequestMapping("/api/query")
@@ -24,56 +21,37 @@ public class DataQueryController {
     }
 
     /**
-     * 执行 SQL 查询（仅支持 SELECT，支持分页；支持明文 sql 或加密 encryptedSql）。
-     *
-     * @param datasourceId 数据源 ID
-     * @param params       请求体：sql 或 encryptedSql，page、size、schema（可选）
-     * @return 查询结果（含 rows、total 等）
+     * 执行查询（仅支持 SELECT，支持分页；支持明文 stat 或加密 encryptedStat）。
      */
-    @PostMapping("/sql/{datasourceId}")
-    public Result<Map<String, Object>> executeSql(@PathVariable Long datasourceId,
+    @PostMapping("/stat/{datasourceId}")
+    public Result<Map<String, Object>> executeStat(@PathVariable Long datasourceId,
                                                   @RequestBody Map<String, Object> params) {
-        String sql = (String) params.get("sql");
-        String encryptedSql = (String) params.get("encryptedSql");
+        String stat = (String) params.get("stat");
+        String encryptedStat = (String) params.get("encryptedStat");
 
-        if (encryptedSql != null && !encryptedSql.isEmpty()) {
-            sql = SqlCryptoUtil.decrypt(encryptedSql);
+        if (encryptedStat != null && !encryptedStat.isEmpty()) {
+            stat = StatCryptoUtil.decrypt(encryptedStat);
         }
 
         Integer page = params.get("page") != null ? (Integer) params.get("page") : 1;
         Integer size = params.get("size") != null ? (Integer) params.get("size") : 100;
         String schema = (String) params.get("schema");
-        return Result.success(dataQueryService.executeQuery(datasourceId, schema, sql, page, size));
+        return Result.success(dataQueryService.executeQuery(datasourceId, schema, stat, page, size));
     }
 
     /**
      * 根据表名快捷查询表数据，支持 schema、where 条件及分页。
-     *
-     * @param datasourceId 数据源 ID
-     * @param tableName    表名
-     * @param schema       模式名（可选）
-     * @param where        WHERE 条件（可选）
-     * @param page         页码，默认 1
-     * @param size         每页条数，默认 100
-     * @return 表数据（含 rows、total）
      */
-    @GetMapping("/table/{datasourceId}")
-    public Result<Map<String, Object>> queryTable(@PathVariable Long datasourceId,
-                                                  @RequestParam String tableName,
+    @GetMapping("/object/{datasourceId}")
+    public Result<Map<String, Object>> queryObject(@PathVariable Long datasourceId,
+                                                  @RequestParam String objectName,
                                                   @RequestParam(required = false) String schema,
                                                   @RequestParam(required = false) String where,
                                                   @RequestParam(defaultValue = "1") Integer page,
                                                   @RequestParam(defaultValue = "100") Integer size) {
-        return Result.success(dataQueryService.queryTableData(datasourceId, schema, tableName, where, page, size));
+        return Result.success(dataQueryService.queryObjectData(datasourceId, schema, objectName, where, page, size));
     }
 
-    /**
-     * Redis：获取指定 key 的值。
-     *
-     * @param datasourceId 数据源 ID（需为 Redis 类型）
-     * @param key          Redis key
-     * @return key 对应的值（类型依实际存储）
-     */
     @GetMapping("/redis/{datasourceId}")
     public Result<Object> getRedisValue(@PathVariable Long datasourceId,
                                        @RequestParam String key) {

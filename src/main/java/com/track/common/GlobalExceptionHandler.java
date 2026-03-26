@@ -13,11 +13,18 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Result<Void>> handleBadRequest(IllegalArgumentException e) {
+        // 业务参数校验类错误：可将简短提示返回给前端
+        String msg = e.getMessage() != null ? e.getMessage() : "请求参数错误";
+        log.warn("请求参数错误: {}", msg);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Result.error(msg));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Result<Void>> handleException(Exception e) {
         log.error("系统异常", e);
-        String msg = e.getMessage() != null ? e.getMessage() : "未知错误";
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Result.error(msg));
+                .body(Result.error("系统异常，请稍后重试"));
     }
 }
