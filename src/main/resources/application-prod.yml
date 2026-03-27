@@ -2,7 +2,7 @@ spring:
   datasource:
     # 生产环境数据库（可按需修改）
     url: jdbc:mysql://10.116.174.130:2883/track?characterEncoding=utf-8&useSSL=false&serverTimezone=GMT%2B8
-    username: lcinfojob@jrsc_mysql#jqgggkpob
+    username: lcinfojob@jrsc_mysql#jqggkpob
     password: JRSC@2025.mall
     driver-class-name: com.mysql.cj.jdbc.Driver
   sql:
