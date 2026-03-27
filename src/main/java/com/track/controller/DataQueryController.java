@@ -15,9 +15,11 @@ import java.util.Map;
 public class DataQueryController {
 
     private final DataQueryService dataQueryService;
+    private final StatCryptoUtil statCryptoUtil;
 
-    public DataQueryController(DataQueryService dataQueryService) {
+    public DataQueryController(DataQueryService dataQueryService, StatCryptoUtil statCryptoUtil) {
         this.dataQueryService = dataQueryService;
+        this.statCryptoUtil = statCryptoUtil;
     }
 
     /**
@@ -30,7 +32,7 @@ public class DataQueryController {
         String encryptedStat = (String) params.get("encryptedStat");
 
         if (encryptedStat != null && !encryptedStat.isEmpty()) {
-            stat = StatCryptoUtil.decrypt(encryptedStat);
+            stat = statCryptoUtil.decrypt(encryptedStat);
         }
 
         Integer page = params.get("page") != null ? (Integer) params.get("page") : 1;

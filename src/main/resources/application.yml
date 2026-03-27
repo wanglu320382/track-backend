@@ -12,3 +12,9 @@ track:
   query:
     max-rows: 1000
     timeout-seconds: 30
+  # 加密配置（前后端共用）
+  crypto:
+      # AES-128 密钥（必须16字节UTF-8）
+      aes-key: "trackbackendkey1"
+      # AES-128 IV（必须16字节UTF-8）
+      aes-iv: "trackbackendiv12"
