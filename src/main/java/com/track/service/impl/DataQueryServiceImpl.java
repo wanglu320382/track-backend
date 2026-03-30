@@ -1,5 +1,6 @@
 package com.track.service.impl;
 
+import com.track.common.ExceptionDetailUtil;
 import com.track.entity.DatasourceConfig;
 import com.track.service.DataQueryService;
 import com.track.service.DatasourceConfigService;
@@ -117,7 +118,7 @@ public class DataQueryServiceImpl implements DataQueryService {
             return r;
         } catch (SQLException e) {
             log.error("查询执行失败 datasourceId={}, type={}, schema={}", datasourceId, type, schema, e);
-            throw new IllegalArgumentException(buildSafeSqlErrorMessage(e));
+            throw new IllegalArgumentException(ExceptionDetailUtil.formatSqlException(e));
         } finally {
             if (conn != null) {
                 try {
@@ -159,28 +160,6 @@ public class DataQueryServiceImpl implements DataQueryService {
 //            throw new IllegalArgumentException("schema 不在允许范围内");
 //        }
         return trimmed;
-    }
-
-    /**
-     * 将数据库异常转换为可前端展示的脱敏提示，避免泄露 SQL/库表结构等敏感细节。
-     */
-    private String buildSafeSqlErrorMessage(SQLException e) {
-        if (e instanceof SQLSyntaxErrorException) {
-            return "SQL 语法有误，或查询对象不存在，请检查后重试";
-        }
-        if (e instanceof SQLTimeoutException || e instanceof SQLTransientConnectionException) {
-            return "数据库连接超时，请稍后重试";
-        }
-        String state = e.getSQLState();
-        if (state != null) {
-            if (state.startsWith("42")) {
-                return "SQL 语法有误，或查询对象不存在，请检查后重试";
-            }
-            if (state.startsWith("08")) {
-                return "数据库连接异常，请稍后重试";
-            }
-        }
-        return "查询执行失败，请检查语句和数据源配置";
     }
 
     @Override

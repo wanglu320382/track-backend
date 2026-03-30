@@ -59,8 +59,7 @@ public class StatCryptoUtil {
             byte[] decrypted = cipher.doFinal(decoded);
             return new String(decrypted, StandardCharsets.UTF_8);
         } catch (Exception e) {
-            // 对外不暴露细节
-            throw new RuntimeException("解密失败");
+            throw new RuntimeException("解密失败: " + e.getMessage(), e);
         }
     }
 }

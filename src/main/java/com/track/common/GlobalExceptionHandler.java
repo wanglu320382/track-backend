@@ -23,8 +23,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Result<Void>> handleException(Exception e) {
-        log.error("系统异常", e);
+        String detail = ExceptionDetailUtil.formatThrowableChain(e);
+        log.error("系统异常: {}", detail, e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Result.error("系统异常，请稍后重试"));
+                .body(Result.error(detail));
     }
 }

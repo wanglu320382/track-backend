@@ -222,7 +222,7 @@ public class DataSourceUtil {
             byte[] decrypted = cipher.doFinal(decoded);
             return new String(decrypted, StandardCharsets.UTF_8);
         } catch (Exception e) {
-            throw new RuntimeException("解密配置失败");
+            throw new RuntimeException("解密配置失败: " + e.getMessage(), e);
         }
     }
 

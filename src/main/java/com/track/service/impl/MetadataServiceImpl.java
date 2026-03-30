@@ -1,5 +1,6 @@
 package com.track.service.impl;
 
+import com.track.common.ExceptionDetailUtil;
 import com.track.entity.DatasourceConfig;
 import com.track.service.DatasourceConfigService;
 import com.track.service.MetadataService;
@@ -54,7 +55,7 @@ public class MetadataServiceImpl implements MetadataService {
             return getMysqlSchemas(conn);
         } catch (SQLException e) {
             log.error("获取库列表失败 datasourceId={}, type={}", datasourceId, type, e);
-            throw new RuntimeException("获取库列表失败");
+            throw new RuntimeException(ExceptionDetailUtil.formatSqlException(e));
         } finally {
             if (conn != null) {
                 try {
@@ -119,7 +120,7 @@ public class MetadataServiceImpl implements MetadataService {
             return getMysqlObjects(conn, db);
         } catch (SQLException e) {
             log.error("获取表列表失败 datasourceId={}, type={}, schema={}", datasourceId, type, schema, e);
-            throw new RuntimeException("获取表列表失败");
+            throw new RuntimeException(ExceptionDetailUtil.formatSqlException(e));
         } finally {
             if (conn != null) {
                 try {
@@ -195,7 +196,7 @@ public class MetadataServiceImpl implements MetadataService {
             return getMysqlColumns(conn, schema, objectName);
         } catch (SQLException e) {
             log.error("获取表结构失败 datasourceId={}, type={}, schema={}, objectName={}", datasourceId, type, schema, objectName, e);
-            throw new RuntimeException("获取表结构失败");
+            throw new RuntimeException(ExceptionDetailUtil.formatSqlException(e));
         } finally {
             if (conn != null) {
                 try {
