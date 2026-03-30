@@ -79,25 +79,65 @@ public class DataSourceUtil {
     private static String buildJdbcUrl(DatasourceConfig config, String type) {
         String host = requireSafeHost(config.getHost());
         int port = config.getPort() != null ? config.getPort() : 3306;
-        String db = requireSafeDbName(config.getDatabaseName());
         String extra = sanitizeExtraParams(type, config.getExtraParams());
         if ("MYSQL".equals(type) || "OCEANBASE".equals(type)) {
+            String db = requireSafeDbName(config.getDatabaseName());
             return String.format(
                     "jdbc:mysql://%s:%d/%s?characterEncoding=utf-8&useSSL=false&serverTimezone=GMT%%2B8%s",
                     host, port, db, extra.isEmpty() ? "" : "&" + extra);
         }
         if ("ORACLE".equals(type)) {
-            return String.format(
-                    "jdbc:oracle:thin:@%s:%d:%s",
-                    host, port, db.isEmpty() ? "orcl" : db);
+            int oraclePort = config.getPort() != null ? config.getPort() : 1521;
+            String mode = normalizeOracleConnectMode(config.getOracleConnectMode());
+            String db = requireSafeOracleIdentifier(config.getDatabaseName(), mode);
+            if (db.isEmpty()) {
+                db = "orcl";
+            }
+            if ("SERVICE_NAME".equals(mode)) {
+                return String.format("jdbc:oracle:thin:@//%s:%d/%s", host, oraclePort, db);
+            }
+            return String.format("jdbc:oracle:thin:@%s:%d:%s", host, oraclePort, db);
         }
         // OceanBase Oracle 模式必须用官方驱动和 jdbc:oceanbase://，不能用 ojdbc8
         if ("OCEANBASE_ORACLE".equals(type)) {
+            String db = requireSafeDbName(config.getDatabaseName());
             return String.format(
                     "jdbc:oceanbase://%s:%d/%s%s",
                     host, port, db.isEmpty() ? "orcl" : db, extra.isEmpty() ? "" : "?" + extra);
         }
         throw new IllegalArgumentException("不支持的数据库类型: " + type);
+    }
+
+    /**
+     * Oracle：未配置或空视为 SID（与历史行为一致）。
+     */
+    private static String normalizeOracleConnectMode(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return "SID";
+        }
+        String m = raw.trim().toUpperCase(Locale.ROOT);
+        if ("SERVICE_NAME".equals(m) || "SERVICE".equals(m)) {
+            return "SERVICE_NAME";
+        }
+        return "SID";
+    }
+
+    /**
+     * SID 与 Service Name 允许的字符集不同（Service Name 常含点号）。
+     */
+    private static String requireSafeOracleIdentifier(String raw, String mode) {
+        if (raw == null) {
+            return "";
+        }
+        String v = raw.trim();
+        if (v.isEmpty()) {
+            return "";
+        }
+        String pattern = "SERVICE_NAME".equals(mode) ? "^[a-zA-Z0-9_.$-]+$" : "^[a-zA-Z0-9_\\-]+$";
+        if (!v.matches(pattern)) {
+            throw new IllegalArgumentException("databaseName 非法");
+        }
+        return v;
     }
 
     private static String getDriverClassName(String type) {

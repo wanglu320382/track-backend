@@ -23,6 +23,8 @@ public class DatasourceConfigServiceImpl extends ServiceImpl<DatasourceConfigMap
         implements DatasourceConfigService {
     private static final Pattern HOST_PATTERN = Pattern.compile("^[A-Za-z0-9.-]+$");
     private static final Pattern DB_NAME_PATTERN = Pattern.compile("^[A-Za-z0-9_.$-]*$");
+    private static final Pattern ORACLE_SID_PATTERN = Pattern.compile("^[A-Za-z0-9_\\-]*$");
+    private static final Pattern ORACLE_SERVICE_PATTERN = Pattern.compile("^[A-Za-z0-9_.$-]*$");
     private static final Pattern PARAM_KEY_PATTERN = Pattern.compile("^[A-Za-z0-9._-]+$");
     private static final Pattern PARAM_VALUE_PATTERN = Pattern.compile("^[A-Za-z0-9._,:%+\\-/*]*$");
 
@@ -76,8 +78,15 @@ public class DatasourceConfigServiceImpl extends ServiceImpl<DatasourceConfigMap
             }
             case "ORACLE": {
                 int oraclePort = config.getPort() != null ? config.getPort() : 1521;
-                String sid = db.isEmpty() ? "orcl" : db;
-                String base = String.format("jdbc:oracle:thin:@%s:%d:%s", host, oraclePort, sid);
+                String mode = normalizeOracleConnectMode(config.getOracleConnectMode());
+                String id = sanitizeOracleDatabaseName(config.getDatabaseName(), mode);
+                String sidOrService = id.isEmpty() ? "orcl" : id;
+                String base;
+                if ("SERVICE_NAME".equals(mode)) {
+                    base = String.format("jdbc:oracle:thin:@//%s:%d/%s", host, oraclePort, sidOrService);
+                } else {
+                    base = String.format("jdbc:oracle:thin:@%s:%d:%s", host, oraclePort, sidOrService);
+                }
                 return appendParams(base, safeExtraParams, ORACLE_ALLOWED_PARAMS, "?");
             }
             case "OCEANBASE_ORACLE": {
@@ -107,6 +116,37 @@ public class DatasourceConfigServiceImpl extends ServiceImpl<DatasourceConfigMap
             throw new IllegalArgumentException("非法数据源配置");
         }
         return db;
+    }
+
+    private static String normalizeOracleConnectMode(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return "SID";
+        }
+        String m = raw.trim().toUpperCase();
+        if ("SERVICE_NAME".equals(m) || "SERVICE".equals(m)) {
+            return "SERVICE_NAME";
+        }
+        return "SID";
+    }
+
+    private String sanitizeOracleDatabaseName(String databaseName, String mode) {
+        if (databaseName == null) {
+            return "";
+        }
+        String v = databaseName.trim();
+        if (v.isEmpty()) {
+            return "";
+        }
+        if ("SERVICE_NAME".equals(mode)) {
+            if (!ORACLE_SERVICE_PATTERN.matcher(v).matches()) {
+                throw new IllegalArgumentException("非法数据源配置");
+            }
+        } else {
+            if (!ORACLE_SID_PATTERN.matcher(v).matches()) {
+                throw new IllegalArgumentException("非法数据源配置");
+            }
+        }
+        return v;
     }
 
     private Map<String, String> parseAndValidateExtraParams(String extraParams) {

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS datasource_config (
   host VARCHAR(100) COMMENT '主机地址',
   port INT COMMENT '端口',
   database_name VARCHAR(100) COMMENT '数据库名/服务名',
+  oracle_connect_mode VARCHAR(20) DEFAULT NULL COMMENT 'Oracle: SID / SERVICE_NAME',
   username VARCHAR(100) COMMENT '用户名',
   password VARCHAR(255) COMMENT '密码',
   extra_params VARCHAR(500) COMMENT '额外连接参数',
@@ -12,6 +13,8 @@ CREATE TABLE IF NOT EXISTS datasource_config (
   create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据源配置表';
+
+-- 已有库升级：ALTER TABLE datasource_config ADD COLUMN oracle_connect_mode VARCHAR(20) DEFAULT NULL COMMENT 'Oracle: SID / SERVICE_NAME' AFTER database_name;
 
 -- 系统用户表
 CREATE TABLE IF NOT EXISTS sys_user (

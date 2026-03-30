@@ -23,6 +23,9 @@ public class DatasourceConfig {
     private Integer port;
     @TableField("database_name")
     private String databaseName;
+    /** Oracle 专用：SID（默认）或 SERVICE_NAME */
+    @TableField("oracle_connect_mode")
+    private String oracleConnectMode;
     private String username;
     private String password;
     @TableField("extra_params")
