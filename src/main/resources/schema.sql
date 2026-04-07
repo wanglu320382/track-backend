@@ -48,3 +48,18 @@ CREATE TABLE IF NOT EXISTS common_sql (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户常用 SQL';
 
 -- 若表已存在，请执行：ALTER TABLE common_sql ADD COLUMN datasource_id BIGINT COMMENT '数据源ID' AFTER user_id;
+
+-- 优化建议
+CREATE TABLE IF NOT EXISTS optimization_suggestion (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL COMMENT '所属用户ID',
+  title VARCHAR(200) NOT NULL COMMENT '标题',
+  pain_point TEXT NOT NULL COMMENT '痛点',
+  improvement_suggestion TEXT NOT NULL COMMENT '改善建议',
+  proposer VARCHAR(100) NOT NULL COMMENT '提出人',
+  status VARCHAR(20) NOT NULL DEFAULT '审核中' COMMENT '状态：审核中/开发中/已上线/不优化',
+  create_time DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '提出时间',
+  update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_user_id (user_id),
+  INDEX idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='优化建议';
