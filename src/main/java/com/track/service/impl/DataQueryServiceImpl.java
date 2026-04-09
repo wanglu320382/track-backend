@@ -45,6 +45,7 @@ public class DataQueryServiceImpl implements DataQueryService {
         if (stat == null || stat.trim().isEmpty()) {
             throw new IllegalArgumentException("查询语句不能为空");
         }
+        stat = stat.replaceAll(";","");
         if (page < 1) {
             throw new IllegalArgumentException("page 必须大于等于 1");
         }
