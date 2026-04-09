@@ -86,14 +86,7 @@ public class DataQueryServiceImpl implements DataQueryService {
             int offset = (page - 1) * size;
             int limit = Math.min(size, MAX_ROWS);
             String baseStat = stripTrailingLimitClause(trimmedStat, type);
-            String countStat = buildCountQuery(baseStat, type);
-            long total = 0L;
-            try (PreparedStatement countPs = conn.prepareStatement(countStat);
-                 ResultSet countRs = countPs.executeQuery()) {
-                if (countRs.next()) {
-                    total = countRs.getLong(1);
-                }
-            }
+            long total = runTotalCount(conn, baseStat, type);
 
             String pageStat = addLimit(trimmedStat, limit, offset, type);
 
@@ -104,14 +97,21 @@ public class DataQueryServiceImpl implements DataQueryService {
                  ResultSet rs = ps.executeQuery()) {
                 ResultSetMetaData meta = rs.getMetaData();
                 int colCount = meta.getColumnCount();
+                Map<String, Integer> labelSeen = new HashMap<>();
+                List<String> columnKeys = new ArrayList<>(colCount);
                 for (int i = 1; i <= colCount; i++) {
-                    columns.add(meta.getColumnLabel(i));
+                    String rawLabel = meta.getColumnLabel(i);
+                    String safeRaw = rawLabel == null ? "" : rawLabel;
+                    int n = labelSeen.merge(safeRaw, 1, Integer::sum);
+                    String key = n == 1 ? safeRaw : safeRaw + "_" + n;
+                    columnKeys.add(key);
+                    columns.add(key);
                 }
                 while (rs.next() && rows.size() < limit) {
                     Map<String, Object> row = new LinkedHashMap<>();
                     for (int i = 1; i <= colCount; i++) {
                         Object val = rs.getObject(i);
-                        row.put(meta.getColumnLabel(i), val);
+                        row.put(columnKeys.get(i - 1), val);
                     }
                     rows.add(row);
                 }
@@ -156,6 +156,160 @@ public class DataQueryServiceImpl implements DataQueryService {
             return "SELECT COUNT(*) FROM (" + innerSelect + ") track_cnt_sq";
         }
         return "SELECT COUNT(*) FROM (" + innerSelect + ") AS track_cnt_sq";
+    }
+
+    /**
+     * 统计总行数：先包装完整 SELECT；若因重复列名（如 a.*, b.*）在子查询中失败，则改为 SELECT 1 FROM ... 再计数。
+     */
+    private long runTotalCount(Connection conn, String baseStat, String type) throws SQLException {
+        String countStat = buildCountQuery(baseStat, type);
+        try (PreparedStatement ps = conn.prepareStatement(countStat);
+             ResultSet rs = ps.executeQuery()) {
+            return rs.next() ? rs.getLong(1) : 0L;
+        } catch (SQLException e) {
+            if (!isDuplicateColumnNameError(e)) {
+                throw e;
+            }
+            String oneSql = buildSelectOneForCount(baseStat, type);
+            if (oneSql == null) {
+                throw new IllegalArgumentException(
+                    "该查询的 SELECT 列表存在重复列名（例如多表使用 a.*、b.* 时均含 id），无法统计总行数。请为列添加别名，例如 a.id AS a_id, b.id AS b_id，或列出具体列名。");
+            }
+            try (PreparedStatement ps = conn.prepareStatement(oneSql);
+                 ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            } catch (SQLException e2) {
+                log.error("分页总数（SELECT 1 回退）执行失败", e2);
+                throw new IllegalArgumentException(
+                    "该查询存在重复列名，分页统计总行数失败。请调整 SELECT：为冲突列添加唯一别名后再试。", e2);
+            }
+        }
+    }
+
+    private static boolean isDuplicateColumnNameError(SQLException e) {
+        SQLException cur = e;
+        while (cur != null) {
+            String msg = cur.getMessage();
+            if (msg != null && msg.toLowerCase(Locale.ROOT).contains("duplicate column name")) {
+                return true;
+            }
+            if (cur.getErrorCode() == 1060) {
+                return true;
+            }
+            cur = cur.getNextException();
+        }
+        return false;
+    }
+
+    /**
+     * 将 SELECT 列表替换为常量 1，保留 FROM 及之后子句，使派生表仅一列，避免 MySQL 派生表「重复列名」错误。
+     */
+    private String buildSelectOneForCount(String baseStat, String type) {
+        int fromIdx = indexOfTopLevelFromKeyword(baseStat);
+        if (fromIdx < 0) {
+            return null;
+        }
+        String tail = baseStat.substring(fromIdx);
+        String inner = "SELECT 1 " + tail;
+        return buildCountQuery(inner, type);
+    }
+
+    /**
+     * 定位最外层 SELECT 后、括号深度为 0 处的第一个 FROM 关键字下标；不支持以 WITH 开头的语句。
+     */
+    private static int indexOfTopLevelFromKeyword(String sql) {
+        if (sql == null) {
+            return -1;
+        }
+        String s = sql.trim();
+        if (s.regionMatches(true, 0, "WITH", 0, 4)) {
+            return -1;
+        }
+        if (!s.regionMatches(true, 0, "SELECT", 0, 6)) {
+            return -1;
+        }
+        int i = 6;
+        while (i < s.length() && Character.isWhitespace(s.charAt(i))) {
+            i++;
+        }
+        int depth = 0;
+        boolean sq = false;
+        boolean dq = false;
+        boolean bt = false;
+        final int n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if (!sq && !dq && !bt) {
+                if (c == '-' && i + 1 < n && s.charAt(i + 1) == '-') {
+                    i += 2;
+                    while (i < n && s.charAt(i) != '\n' && s.charAt(i) != '\r') {
+                        i++;
+                    }
+                    continue;
+                }
+                if (c == '/' && i + 1 < n && s.charAt(i + 1) == '*') {
+                    i += 2;
+                    while (i + 1 < n && !(s.charAt(i) == '*' && s.charAt(i + 1) == '/')) {
+                        i++;
+                    }
+                    i = Math.min(i + 2, n);
+                    continue;
+                }
+                if (c == '(') {
+                    depth++;
+                    i++;
+                    continue;
+                }
+                if (c == ')') {
+                    if (depth > 0) {
+                        depth--;
+                    }
+                    i++;
+                    continue;
+                }
+                if (depth == 0 && matchesFromKeyword(s, i)) {
+                    return i;
+                }
+            }
+            if (!dq && !bt && c == '\'') {
+                sq = !sq;
+                i++;
+                continue;
+            }
+            if (!sq && !bt && c == '"') {
+                dq = !dq;
+                i++;
+                continue;
+            }
+            if (!sq && !dq && c == '`') {
+                bt = !bt;
+                i++;
+                continue;
+            }
+            i++;
+        }
+        return -1;
+    }
+
+    private static boolean matchesFromKeyword(String s, int pos) {
+        int len = s.length();
+        if (pos + 4 > len) {
+            return false;
+        }
+        if (!s.regionMatches(true, pos, "FROM", 0, 4)) {
+            return false;
+        }
+        if (pos > 0 && Character.isJavaIdentifierPart(s.charAt(pos - 1))) {
+            return false;
+        }
+        int after = pos + 4;
+        if (after < len) {
+            char nc = s.charAt(after);
+            if (Character.isJavaIdentifierPart(nc) && nc != '`') {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String addLimit(String stat, int limit, int offset, String type) {
