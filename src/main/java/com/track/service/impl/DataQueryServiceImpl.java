@@ -85,11 +85,20 @@ public class DataQueryServiceImpl implements DataQueryService {
 
             int offset = (page - 1) * size;
             int limit = Math.min(size, MAX_ROWS);
+            String baseStat = stripTrailingLimitClause(trimmedStat, type);
+            String countStat = buildCountQuery(baseStat, type);
+            long total = 0L;
+            try (PreparedStatement countPs = conn.prepareStatement(countStat);
+                 ResultSet countRs = countPs.executeQuery()) {
+                if (countRs.next()) {
+                    total = countRs.getLong(1);
+                }
+            }
+
             String pageStat = addLimit(trimmedStat, limit, offset, type);
 
             List<Map<String, Object>> rows = new ArrayList<>();
             List<String> columns = new ArrayList<>();
-            int total = 0;
 
             try (PreparedStatement ps = conn.prepareStatement(pageStat);
                  ResultSet rs = ps.executeQuery()) {
@@ -107,8 +116,6 @@ public class DataQueryServiceImpl implements DataQueryService {
                     rows.add(row);
                 }
             }
-
-            total = rows.size();
 
             Map<String, Object> r = new HashMap<String, Object>();
             r.put("columns", columns);
@@ -129,6 +136,26 @@ public class DataQueryServiceImpl implements DataQueryService {
             }
             DataSourceUtil.closeDataSource(ds);
         }
+    }
+
+    /**
+     * 与 {@link #addLimit} 一致：去掉用户语句末尾的 LIMIT/OFFSET，便于 COUNT 与分页基于同一套 SELECT。
+     */
+    private String stripTrailingLimitClause(String stat, String type) {
+        stat = stat.trim();
+        stat = stat.replaceAll("(?i)\\s+LIMIT\\s+\\d+(\\s+OFFSET\\s+\\d+)?\\s*$", "");
+        return stat;
+    }
+
+    /**
+     * 将 SELECT 包在 COUNT 子查询中，得到符合当前过滤条件的总行数（用于分页 total）。
+     * 内层 SQL 已通过上层校验，仅由服务端拼接固定包装，不拼接外部标识符。
+     */
+    private String buildCountQuery(String innerSelect, String type) {
+        if ("ORACLE".equals(type) || "OCEANBASE_ORACLE".equals(type)) {
+            return "SELECT COUNT(*) FROM (" + innerSelect + ") track_cnt_sq";
+        }
+        return "SELECT COUNT(*) FROM (" + innerSelect + ") AS track_cnt_sq";
     }
 
     private String addLimit(String stat, int limit, int offset, String type) {
