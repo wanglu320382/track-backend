@@ -12,6 +12,10 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisMovedDataException;
 
 import javax.sql.DataSource;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Reader;
 import java.sql.*;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -110,7 +114,7 @@ public class DataQueryServiceImpl implements DataQueryService {
                 while (rs.next() && rows.size() < limit) {
                     Map<String, Object> row = new LinkedHashMap<>();
                     for (int i = 1; i <= colCount; i++) {
-                        Object val = rs.getObject(i);
+                        Object val = normalizeJdbcValue(rs.getObject(i));
                         row.put(columnKeys.get(i - 1), val);
                     }
                     rows.add(row);
@@ -135,6 +139,128 @@ public class DataQueryServiceImpl implements DataQueryService {
                 }
             }
             DataSourceUtil.closeDataSource(ds);
+        }
+    }
+
+    /**
+     * 将 JDBC 返回值转换为可安全 JSON 序列化的对象，避免 CLOB/BLOB 等驱动对象直接进入响应体。
+     */
+    private Object normalizeJdbcValue(Object value) throws SQLException {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Clob) {
+            return readClobValue((Clob) value);
+        }
+        if (value instanceof SQLXML) {
+            SQLXML sqlxml = (SQLXML) value;
+            try {
+                return sqlxml.getString();
+            } finally {
+                safeFreeSqlXml(sqlxml);
+            }
+        }
+        if (value instanceof Blob) {
+            return readBlobValue((Blob) value);
+        }
+        if (value instanceof Array) {
+            return readSqlArrayValue((Array) value);
+        }
+        if (value instanceof Struct) {
+            Struct struct = (Struct) value;
+            Object[] attrs = struct.getAttributes();
+            List<Object> out = new ArrayList<>(attrs.length);
+            for (Object attr : attrs) {
+                out.add(normalizeJdbcValue(attr));
+            }
+            return out;
+        }
+        return value;
+    }
+
+    private String readClobValue(Clob clob) throws SQLException {
+        try (Reader reader = clob.getCharacterStream()) {
+            if (reader == null) {
+                return null;
+            }
+            StringBuilder sb = new StringBuilder();
+            char[] buffer = new char[4096];
+            int len;
+            while ((len = reader.read(buffer)) != -1) {
+                sb.append(buffer, 0, len);
+            }
+            return sb.toString();
+        } catch (IOException e) {
+            throw new SQLException("CLOB 字段读取失败", e);
+        } finally {
+            safeFreeClob(clob);
+        }
+    }
+
+    private String readBlobValue(Blob blob) throws SQLException {
+        try (InputStream in = blob.getBinaryStream();
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (in == null) {
+                return null;
+            }
+            byte[] buffer = new byte[4096];
+            int len;
+            while ((len = in.read(buffer)) != -1) {
+                out.write(buffer, 0, len);
+            }
+            return Base64.getEncoder().encodeToString(out.toByteArray());
+        } catch (IOException e) {
+            throw new SQLException("BLOB 字段读取失败", e);
+        } finally {
+            safeFreeBlob(blob);
+        }
+    }
+
+    private List<Object> readSqlArrayValue(Array array) throws SQLException {
+        try {
+            Object rawArray = array.getArray();
+            if (rawArray == null) {
+                return Collections.emptyList();
+            }
+            if (!rawArray.getClass().isArray()) {
+                return Collections.singletonList(normalizeJdbcValue(rawArray));
+            }
+            int len = java.lang.reflect.Array.getLength(rawArray);
+            List<Object> out = new ArrayList<>(len);
+            for (int i = 0; i < len; i++) {
+                out.add(normalizeJdbcValue(java.lang.reflect.Array.get(rawArray, i)));
+            }
+            return out;
+        } finally {
+            safeFreeArray(array);
+        }
+    }
+
+    private void safeFreeClob(Clob clob) {
+        try {
+            clob.free();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void safeFreeBlob(Blob blob) {
+        try {
+            blob.free();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void safeFreeArray(Array array) {
+        try {
+            array.free();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void safeFreeSqlXml(SQLXML sqlxml) {
+        try {
+            sqlxml.free();
+        } catch (Exception ignored) {
         }
     }
 
